@@ -1,0 +1,59 @@
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name        = "blauberg-vento"
+version     = "1.0.0"
+description = "Python API for Blauberg Vento Expert Wi-Fi fans"
+readme      = "README.md"
+license     = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Birger Kollstrand", email = "birger@kollstrand.no" }]
+dependencies    = []
+keywords = ["blauberg", "vento", "fan", "hvac", "home-automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Home Automation",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0",
+       "httpx>=0.27", "pytest-playwright>=0.5", "ruff>=0.6", "mypy>=1.10"]
+
+[project.urls]
+Homepage = "https://github.com/BirgerKo/blauberg_vento_api"
+Repository = "https://github.com/BirgerKo/blauberg_vento_api.git"
+Issues = "https://github.com/BirgerKo/blauberg_vento_api/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["blauberg_vento"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths    = ["tests"]
+
+[tool.coverage.run]
+source = ["blauberg_vento"]
+
+[tool.ruff]
+line-length = 120
+src = ["blauberg_vento"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"blauberg_vento/parameters.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
