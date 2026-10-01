@@ -69,6 +69,19 @@ for device in devices:
     print(f"Found device: {device.device_id} at {device.ip}")
 ```
 
+# Releasing
+
+Releases are published to [PyPI](https://pypi.org/project/blauberg-vento/) automatically via GitHub Actions (trusted publishing, no tokens stored).
+
+## Release a new version
+
+1. Bump `version` in `pyproject.toml`
+2. Commit and push to `main`
+3. Create a [GitHub Release](https://github.com/BirgerKo/blauberg_vento_api/releases) with a tag matching the version (e.g. `v1.0.1`)
+4. The `Publish` workflow builds the sdist and wheel and uploads them to PyPI
+
+To dry-run the pipeline, run the `Publish` workflow manually (Actions → Publish → Run workflow); it will upload to [TestPyPI](https://test.pypi.org/) instead.
+
 # Documentation
 See ARCHITECTURE.md for detailed architecture overview.
 
