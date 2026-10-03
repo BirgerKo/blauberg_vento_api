@@ -42,6 +42,7 @@ from .protocol import (
     build_discovery,
     build_increment,
     build_read,
+    build_schedule_read,
     build_write,
     build_write_resp,
     decode_filter_countdown,
@@ -417,12 +418,13 @@ class VentoClient:
     def get_schedule_period(self, day: int, period: int) -> SchedulePeriod:
         """Read back a single schedule period from the device.
 
-        Reads are indexed by writing day+period as selector bytes, then
-        reading the response which includes the stored speed and end time.
+        Reads are indexed by sending a read request (FUNC = 0x01) with the
+        special 0xFE size command and a 2-byte selector (day of the week,
+        period number); the controller responds with the stored 6-byte value.
         """
-        _check_range("day", day, 0, 9)
+        _check_range("day", day, 1, 7)
         _check_range("period", period, 1, 4)
-        raw = self.write_params_with_response({Param.SCHEDULE_SETUP: bytes([day, period, 0, 0, 0, 0])})
+        raw = self._send_recv(build_schedule_read(self.device_id, self.password, day, period))
         decoded = decode_schedule(raw[Param.SCHEDULE_SETUP])
         return SchedulePeriod(
             period_number=decoded["period"],
@@ -686,10 +688,15 @@ class AsyncVentoClient:
         await self.write_params({Param.SCHEDULE_SETUP: bytes([day, period, speed, 0, end_m, end_h])})
 
     async def get_schedule_period(self, day: int, period: int) -> SchedulePeriod:
-        """Read back a single schedule period from the device."""
-        _check_range("day", day, 0, 9)
+        """Read back a single schedule period from the device.
+
+        Reads are indexed by sending a read request (FUNC = 0x01) with the
+        special 0xFE size command and a 2-byte selector (day of the week,
+        period number); the controller responds with the stored 6-byte value.
+        """
+        _check_range("day", day, 1, 7)
         _check_range("period", period, 1, 4)
-        raw = await self.write_params_with_response({Param.SCHEDULE_SETUP: bytes([day, period, 0, 0, 0, 0])})
+        raw = await self._send_recv(build_schedule_read(self.device_id, self.password, day, period))
         decoded = decode_schedule(raw[Param.SCHEDULE_SETUP])
         return SchedulePeriod(
             period_number=decoded["period"],

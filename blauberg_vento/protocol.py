@@ -134,6 +134,17 @@ def build_read(device_id: str | bytes, password: str, params: list[Param]) -> by
     return build_packet(device_id, password, Func.READ, _build_read_data(params))
 
 
+def build_schedule_read(device_id: str | bytes, password: str, day: int, period: int) -> bytes:
+    """Build a read request for parameter 119 (0x0077, schedule setup).
+
+    Per spec B133-4-1EN-02, the read request uses the special 0xFE command with
+    a 2-byte value selecting the day of the week and the time period number.
+    The controller response returns all 6 bytes of the stored schedule period.
+    """
+    data = bytes([CMD_SIZE, 0x02, int(Param.SCHEDULE_SETUP) & 0xFF, day, period])
+    return build_packet(device_id, password, Func.READ, data)
+
+
 def build_write(device_id: str | bytes, password: str, pv: ParamValues) -> bytes:
     return build_packet(device_id, password, Func.WRITE, _build_write_data(pv))
 
