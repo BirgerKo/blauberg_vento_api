@@ -23,9 +23,14 @@ from .models import (
     TimerCountdown,
     WifiConfig,
 )
+from importlib.metadata import PackageNotFoundError, version
+
 from .parameters import Func, Param
 
-__version__ = "1.0.0"
+try:
+    __version__ = version("blauberg-vento")
+except PackageNotFoundError:
+    __version__ = "0.0.0.dev0"
 __all__ = [
     "VentoClient",
     "AsyncVentoClient",

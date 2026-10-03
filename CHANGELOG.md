@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet.
 
+## [1.0.2] - 2026-10-01
+
+### Fixed
+
+- Added `py.typed` marker so the package is PEP 561 typed.
+- `__version__` is now single-sourced from installed package metadata and no longer drifts from `pyproject.toml`.
+
 ## [1.0.1] - 2026-10-01
 
 ### Added
