@@ -1,3 +1,5 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from .client import AsyncVentoClient, VentoClient
 from .exceptions import (
     VentoAuthError,
@@ -23,8 +25,6 @@ from .models import (
     TimerCountdown,
     WifiConfig,
 )
-from importlib.metadata import PackageNotFoundError, version
-
 from .parameters import Func, Param
 
 try:
