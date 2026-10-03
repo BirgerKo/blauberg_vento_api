@@ -5,6 +5,7 @@ from blauberg_vento.protocol import (
     build_discovery,
     build_packet,
     build_read,
+    build_schedule_read,
     decode_filter_countdown,
     decode_firmware,
     decode_ip,
@@ -129,6 +130,26 @@ class TestBuilding:
         raw = pkt[2:-2]
         idx = raw.index(0xFF)
         assert raw[idx + 1] == 0x03 and raw[idx + 2] == 0x02
+
+    def test_schedule_read_uses_fe_size_cmd_and_2_byte_selector(self):
+        pkt = build_schedule_read(NULL_ID, NULL_PWD, day=1, period=2)
+        raw = pkt[2:-2]
+        idx = raw.index(0xFE)
+        assert raw[idx + 1] == 0x02
+        assert raw[idx + 2] == int(Param.SCHEDULE_SETUP) & 0xFF
+        assert raw[idx + 3] == 1 and raw[idx + 4] == 2
+        assert idx + 5 == len(raw)  # selector is exactly 2 bytes, no extra value bytes
+        assert raw[idx - 1] == 0x01  # FUNC = 0x01 (read) immediately before data block
+        verify_checksum(pkt)
+
+    def test_schedule_write_and_response_use_6_bytes(self):
+        from blauberg_vento.protocol import build_write
+
+        pkt = build_write(NULL_ID, NULL_PWD, {Param.SCHEDULE_SETUP: bytes([1, 2, 3, 0, 30, 8])})
+        raw = pkt[2:-2]
+        idx = raw.index(0xFE)
+        assert raw[idx + 1] == 0x06  # size command announces 6-byte value
+        assert len(raw[idx + 2:]) == 1 + 6
 
     def test_bad_id_raises(self):
         with pytest.raises(Exception):
