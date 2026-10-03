@@ -2,6 +2,10 @@
 
 A Python library for controlling Blauberg Vento Expert Wi-Fi ventilation units.
 
+## Protocol documentation
+
+The UDP protocol implemented by this library is based on Blauberg's openly available document **B133-4-1EN-02**, *"Connection to a 'Smart Home' system"*, for the Vento Expert (Duo) A30/50/85/100 W V.2 series.
+
 ## Features
 
 - Control Blauberg Vento fans via UDP protocol
