@@ -528,7 +528,12 @@ PARAM_META: dict[Param, ParamMeta] = {
 
 
 def param_size(p: Param) -> int | None:
-    return PARAM_META[p]["size"]
+    meta = PARAM_META.get(p)
+    return meta["size"] if meta is not None else None
+
+
+def is_known(p: Param) -> bool:
+    return p in PARAM_META
 
 
 def is_readable(p: Param) -> bool:
@@ -537,6 +542,29 @@ def is_readable(p: Param) -> bool:
 
 def is_writable(p: Param) -> bool:
     return "W" in PARAM_META[p]["func"] or "RW" in PARAM_META[p]["func"]
+
+
+def is_write_only(p: Param) -> bool:
+    """True for params whose only function is W (no R/RW support).
+
+    Unknown params return False: their capabilities are not known to the
+    library and the controller's 0xFD negative ack is the source of truth.
+    """
+    meta = PARAM_META.get(p)
+    return meta is not None and meta["func"] == _WRITE_ONLY
+
+
+def is_invertible(p: Param) -> bool:
+    """True when value 2 means "Invert" for this parameter (datasheet value table).
+
+    Invert writes are not idempotent: a retry after a lost ack would invert
+    the state a second time.
+    """
+    meta = PARAM_META.get(p)
+    if meta is None:
+        return False
+    values = meta["values"]
+    return values is not None and values.get(2) == "Invert"
 
 
 def is_incrementable(p: Param) -> bool:

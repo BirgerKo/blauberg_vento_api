@@ -249,7 +249,13 @@ class TestValidation:
     def test_manual_speed_boundaries(self):
         from unittest.mock import patch
 
+        from blauberg_vento.parameters import Func
+        from blauberg_vento.protocol import build_packet
+
         c = self._c()
-        with patch.object(c._transport, "send_only"):
+        # set_manual_speed is a verified write: the transport returns an echo
+        # ack containing SPEED and MANUAL_SPEED values.
+        echo = build_packet(c.device_id.encode("ascii"), "1111", Func.RESPONSE, bytes([0x02, 0xFF, 0x44, 0x00]))
+        with patch.object(c._transport, "send_recv", return_value=echo):
             c.set_manual_speed(0)
             c.set_manual_speed(255)

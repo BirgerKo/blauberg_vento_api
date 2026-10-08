@@ -44,8 +44,12 @@ class VentoTransport:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.settimeout(t)
                 s.sendto(packet, (host, port))
-                data, _ = s.recvfrom(_UDP_BUFFER_SIZE)
-                return data
+                # Ignore datagrams from any other source: a stray packet from
+                # another host on the LAN must never be mistaken for the ack.
+                while True:
+                    data, addr = s.recvfrom(_UDP_BUFFER_SIZE)
+                    if addr[0] == host:
+                        return data
         except TimeoutError:
             raise VentoTimeoutError(f"Timeout from {host}:{port}")
         except OSError as e:
@@ -85,12 +89,20 @@ class VentoTransport:
 
 
 class _SingleResponseProtocol(asyncio.DatagramProtocol):
-    """Asyncio UDP protocol that resolves a Future with the first datagram received."""
+    """Asyncio UDP protocol that resolves a Future with the first datagram received.
 
-    def __init__(self, future: asyncio.Future[DatagramResponse]) -> None:
+    When ``expected_host`` is given, datagrams from any other source address
+    are ignored so a stray LAN packet cannot be mistaken for the ack. Without
+    it, the first datagram resolves the Future (legacy behaviour).
+    """
+
+    def __init__(self, future: asyncio.Future[DatagramResponse], expected_host: str | None = None) -> None:
         self._future = future
+        self._expected_host = expected_host
 
     def datagram_received(self, data: bytes, addr: RemoteAddress) -> None:
+        if self._expected_host is not None and addr[0] != self._expected_host:
+            return
         if not self._future.done():
             self._future.set_result((data, addr))
 
@@ -125,7 +137,7 @@ class AsyncVentoTransport:
         future: asyncio.Future[DatagramResponse] = loop.create_future()
         try:
             transport, _ = await loop.create_datagram_endpoint(
-                lambda: _SingleResponseProtocol(future),
+                lambda: _SingleResponseProtocol(future, expected_host=host),
                 remote_addr=(host, port),
             )
         except OSError as e:

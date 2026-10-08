@@ -26,7 +26,8 @@ def test_invalid_packet_rejections(raw: bytes, expected_error: type[Exception]) 
 
 
 def test_parse_response_rejects_truncated_packet() -> None:
-    raw = b"\xfd\xfd\x02\x10" + b"\x00" * 16 + b"\x00\x06" + b"\x00\x00"
+    # Packet cut off before the data section and checksum bytes even begin.
+    raw = b"\xfd\xfd\x02\x10" + b"\x00" * 16 + b"\x00\x06"
     with pytest.raises(VentoProtocolError):
         parse_response(raw)
 

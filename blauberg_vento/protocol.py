@@ -24,7 +24,13 @@ from __future__ import annotations
 import struct
 from typing import NamedTuple
 
-from .exceptions import VentoChecksumError, VentoProtocolError, VentoUnsupportedParamError
+from .exceptions import (
+    VentoAckMismatchError,
+    VentoCapabilityError,
+    VentoChecksumError,
+    VentoProtocolError,
+    VentoUnsupportedParamError,
+)
 from .parameters import (
     CMD_FUNC,
     CMD_NOT_SUP,
@@ -33,9 +39,11 @@ from .parameters import (
     DEFAULT_DEVICE_ID,
     MAX_PACKET_SIZE,
     PACKET_START,
+    PARAM_META,
     PROTOCOL_TYPE,
     Func,
     Param,
+    is_write_only,
     param_size,
 )
 
@@ -130,7 +138,37 @@ def _build_write_data(param_values: dict[Param, int | bytes]) -> bytes:
     return bytes(data)
 
 
+def _check_write_capabilities(pv: ParamValues, func: Func) -> None:
+    """Enforce the write policy at packet-build time, before any UDP traffic.
+
+    - Known params must be writable at all (read-only params reject writes).
+    - For FUNC 0x02 (plain write), RW-capable params are rejected: verified
+      writes (FUNC 0x03) are the only permitted write path for them.
+    - Unknown params pass through so capability probing can rely on the
+      controller's 0xFD negative ack as the source of truth.
+    """
+    invalid: list[int] = []
+    for p in pv:
+        funcs = _param_functions(p)
+        if not funcs or funcs == frozenset(["W"]):
+            continue
+        if "W" not in funcs and "RW" not in funcs:
+            invalid.append(int(p))
+        elif func is Func.WRITE and "RW" in funcs:
+            invalid.append(int(p))
+    if invalid:
+        raise VentoCapabilityError(invalid)
+
+
+def _param_functions(p: Param) -> frozenset[str]:
+    meta = PARAM_META.get(p)
+    return meta["func"] if meta is not None else frozenset()
+
+
 def build_read(device_id: str | bytes, password: str, params: list[Param]) -> bytes:
+    invalid = [int(p) for p in params if is_write_only(p)]
+    if invalid:
+        raise VentoCapabilityError(invalid)
     return build_packet(device_id, password, Func.READ, _build_read_data(params))
 
 
@@ -146,10 +184,12 @@ def build_schedule_read(device_id: str | bytes, password: str, day: int, period:
 
 
 def build_write(device_id: str | bytes, password: str, pv: ParamValues) -> bytes:
+    _check_write_capabilities(pv, Func.WRITE)
     return build_packet(device_id, password, Func.WRITE, _build_write_data(pv))
 
 
 def build_write_resp(device_id: str | bytes, password: str, pv: ParamValues) -> bytes:
+    _check_write_capabilities(pv, Func.WRITE_RESP)
     return build_packet(device_id, password, Func.WRITE_RESP, _build_write_data(pv))
 
 
@@ -216,13 +256,34 @@ def _parse_packet_header(raw: bytes) -> _PacketHeader:
     )
 
 
-def parse_response(raw: bytes) -> ResponseValues:
+def _encode_expected_id(expected_device_id: str | bytes) -> bytes:
+    if isinstance(expected_device_id, str):
+        return expected_device_id.encode("ascii")
+    return bytes(expected_device_id)
+
+
+def parse_response(raw: bytes, expected_device_id: str | bytes | None = None) -> ResponseValues:
+    """Parse a controller response (FUNC = 0x06) into a param -> bytes mapping.
+
+    An empty data section is accepted and yields an empty mapping: live testing
+    showed the controller answers a write-only-param request this way. When
+    ``expected_device_id`` is given, an ack whose header device ID differs from
+    it raises VentoAckMismatchError - the protocol has no transaction ID, so
+    the device ID is the only request/ack correlation key.
+    """
     header = _parse_packet_header(raw)
     if header.func_byte != int(Func.RESPONSE):
         raise VentoProtocolError(f"Expected FUNC=0x06, got {header.func_byte:#04x}")
-    if header.data_start >= len(raw) - 2:
-        raise VentoProtocolError("Response packet missing payload data")
+    if expected_device_id is not None:
+        expected = _encode_expected_id(expected_device_id)
+        if header.device_id != expected:
+            raise VentoAckMismatchError(
+                expected.decode("ascii", "replace"),
+                header.device_id.decode("ascii", "replace"),
+            )
     verify_checksum(raw)
+    if header.data_start >= len(raw) - 2:
+        return {}
     return _parse_data_bytes(raw[header.data_start : -2])
 
 
@@ -290,7 +351,7 @@ def _parse_data_bytes(data: bytes) -> ResponseValues:
         param_size = 1
 
     if unsupported:
-        raise VentoUnsupportedParamError(unsupported)
+        raise VentoUnsupportedParamError(unsupported, applied=result)
     return result
 
 

@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blauberg Vento API - Test Case Descriptions</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: #1e2430; background: #f4f6f9; margin: 0; padding: 2rem 1rem 4rem;
+    line-height: 1.5;
+  }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.7rem; border-bottom: 3px solid #2c5cc5; padding-bottom: .5rem; }
+  h2 { font-size: 1.25rem; margin-top: 2.5rem; color: #1b2a4a; }
+  h3 { font-size: 1.05rem; margin: 1.8rem 0 .4rem; color: #2c5cc5; }
+  .meta { color: #556; font-size: .9rem; }
+  .meta strong { color: #1e2430; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0 1.5rem; background: #fff;
+          box-shadow: 0 1px 3px rgba(20,30,60,.08); font-size: .88rem; }
+  th { background: #1b2a4a; color: #fff; text-align: left; padding: .5rem .65rem; }
+  td { border-bottom: 1px solid #e3e8f0; padding: .5rem .65rem; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8fafd; }
+  code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .82em;
+         background: #eef1f7; padding: .1em .35em; border-radius: 4px; }
+  .case-id { font-family: ui-monospace, Consolas, monospace; font-size: .78rem; white-space: nowrap; }
+  .pass { color: #0a7d32; font-weight: 600; white-space: nowrap; }
+  .red { color: #b3261e; font-weight: 600; white-space: nowrap; }
+  .note {
+    background: #fff8e1; border-left: 4px solid #f0b400; padding: .7rem 1rem; margin: 1rem 0;
+    border-radius: 0 6px 6px 0; font-size: .92rem;
+  }
+  .evidence {
+    background: #eef6ff; border-left: 4px solid #2c5cc5; padding: .7rem 1rem; margin: 1rem 0;
+    border-radius: 0 6px 6px 0; font-size: .92rem;
+  }
+  ul { margin-top: .3rem; }
+  li { margin-bottom: .25rem; }
+  .toc a { color: #2c5cc5; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .legend { display: flex; gap: 1.5rem; font-size: .88rem; margin: .8rem 0; }
+  footer { margin-top: 3rem; color: #778; font-size: .82rem; border-top: 1px solid #dde; padding-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Blauberg Vento API &mdash; Test Case Descriptions</h1>
+<p class="meta">
+  <strong>Project:</strong> blauberg-vento (blauberg_vento_api) &middot;
+  <strong>Version:</strong> 1.0.3 &middot;
+  <strong>Updated:</strong> 2026-10-04 &middot;
+  <strong>Test framework:</strong> pytest (asyncio_mode=auto)
+</p>
+<p class="meta">
+  <strong>Run:</strong> <code>python -m pytest tests -q</code> &middot;
+  <strong>Current status:</strong> 92 test cases, all passing.
+  The robust-ack functionality described below was implemented on 2026-10-04;
+  the test-first cases that were red during design are now green.
+</p>
+
+<div class="legend">
+  <span><span class="pass">Passes now</span> &mdash; all 92 cases are green in the current build</span>
+</div>
+
+<div class="evidence">
+  <strong>Live evidence base.</strong> These descriptions were written against measurements from
+  six real Vento Expert fans on 192.168.29.0/24 (4&times; unit type 3 A50-1/A85-1/A100-1 W V.2,
+  2&times; type 4 Duo A30-1 W V.2, firmware 0.4), using the Blauberg Smart Home connection guide
+  (B133-4-1EN-02) as the protocol source of truth. Key measured facts:
+  <ul>
+    <li>FUNC 0x02 writes never get a response; FUNC 0x03 writes get a 0x06 echo ack whose values equal the <em>applied</em> state (clamping proven: write 30 &rarr; echo 40).</li>
+    <li>Negative acks use the 0xFD special command (e.g. <code>fd 90</code>) in reads and writes alike.</li>
+    <li>~3% UDP loss measured (2 silent responses in ~70 round trips) &rarr; retries are mandatory.</li>
+    <li>Wrong password, unknown FUNC, corrupted checksum and device-off are all silent &mdash; indistinguishable.</li>
+    <li>A 0x03 write to a write-only param (RESET_ALARMS, 128) returns a 0x06 packet with an <em>empty</em> data section.</li>
+  </ul>
+</div>
+
+<h2>Table of contents</h2>
+<ol class="toc">
+  <li><a href="#policy">Write and verification policy under test</a></li>
+  <li><a href="#new-protocol">New: tests/test_ack_protocol.py</a></li>
+  <li><a href="#new-client">New: tests/test_ack_client.py</a></li>
+  <li><a href="#new-transport">New: tests/test_ack_transport.py</a></li>
+  <li><a href="#existing-protocol">Existing: tests/test_protocol.py</a></li>
+  <li><a href="#existing-invalid">Existing: tests/test_protocol_invalid.py</a></li>
+  <li><a href="#existing-transport">Existing: tests/test_transport.py</a></li>
+  <li><a href="#existing-discovery">Existing: tests/test_client_discovery.py</a></li>
+</ol>
+
+<h2 id="policy">Write and verification policy under test</h2>
+<div class="note">
+  The new tests encode these rules:
+  <ul>
+    <li><strong>Capability-driven writes.</strong> Params marked RW-capable (28 of 51) may only be
+    written via FUNC 0x03 (verified write). Plain FUNC 0x02 writes are rejected at packet-build
+    time, before any UDP traffic. Write-only params (5: FILTER_RESET, RESET_ALARMS, FACTORY_RESET,
+    WIFI_APPLY, WIFI_DISCARD) keep FUNC 0x02. Read-only params (18) reject every write.</li>
+    <li><strong>Verified write.</strong> 0x03 + echo comparison; returns the applied values.
+    Idempotent writes retry up to 3 attempts on timeout, then raise
+    <code>VentoAckError</code> (with <code>attempts</code>). Invert-sentinel writes
+    (value 2 on params defining &ldquo;2 &ndash; Invert&rdquo;, e.g. POWER) get a single attempt
+    so a lost ack can never double-toggle.</li>
+    <li><strong>Correlation.</strong> Acks are tied to requests by the header device ID and the
+    transport source address; mismatches raise <code>VentoAckMismatchError</code> / are ignored.</li>
+    <li><strong>Negative acks.</strong> <code>VentoUnsupportedParamError</code> gains an
+    <code>applied</code> mapping so mixed acks (device applied SPEED, rejected 0x90) do not
+    discard the applied subset.</li>
+  </ul>
+</div>
+
+<h2 id="new-protocol">New: tests/test_ack_protocol.py</h2>
+<p>Protocol-layer contract for the robust-ack functionality. 19 cases, all green.</p>
+
+<h3>TestEmptyAckParsing</h3>
+<p class="meta">Basis: live probe &mdash; a 0x03 write to W-only param 128 returned 0x06 with an empty data section; the current parser raises &ldquo;Response packet missing payload data&rdquo;.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_empty_response_ack_returns_empty_dict</td>
+    <td>Parses a valid 0x06 response packet (correct header, checksum) whose data section is empty (0 bytes).</td>
+    <td><code>parse_response()</code> returns <code>{}</code> without raising.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_empty_response_ack_with_matching_expected_id</td>
+    <td>Same empty-data 0x06 packet, parsed with <code>expected_device_id</code> equal to the packet's device ID.</td>
+    <td>Returns <code>{}</code>; the correlation check accepts a matching ID.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestMixedAckAppliedValues</h3>
+<p class="meta">Basis: live mixed ack data=<code>02 01 fd 90</code> &mdash; SPEED applied, 0x90 rejected; today the applied value is discarded when the error raises.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_unsupported_param_error_carries_applied_values</td>
+    <td>Parses a 0x06 ack containing one applied param (SPEED=01) and one 0xFD entry (param 0x90).</td>
+    <td>Raises <code>VentoUnsupportedParamError</code>; <code>.params == [0x90]</code> and <code>.applied == {Param.SPEED: b"\x01"}</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_unsupported_param_error_applied_defaults_empty</td>
+    <td>Parses an ack containing only a 0xFD entry (no applied params).</td>
+    <td>Raises <code>VentoUnsupportedParamError</code> with <code>.applied == {}</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestAckDeviceIdCorrelation</h3>
+<p class="meta">Basis: the protocol has no transaction ID; the header device ID is the only correlation key between request and ack.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_parse_response_rejects_wrong_device_id</td>
+    <td>A 0x06 ack whose header device ID (OTHER_ID) differs from the expected one (DEV_ID).</td>
+    <td>Raises <code>VentoAckMismatchError</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_parse_response_accepts_matching_expected_id</td>
+    <td>A normal ack whose device ID equals <code>expected_device_id</code>.</td>
+    <td>Returns the parsed mapping (<code>{Param.SPEED: b"\x01"}</code>).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_parse_response_without_expected_id_accepts_any_device</td>
+    <td>Ack from a foreign device parsed <em>without</em> <code>expected_device_id</code> (backward compatibility).</td>
+    <td>Returns the parsed mapping; no correlation check is performed.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestWriteCapabilityValidation</h3>
+<p class="meta">Encodes the write policy: FUNC 0x02 is reserved for W-only params; FUNC 0x03 accepts any writable param; read-only and unknown params are rejected by both write paths before any packet is built.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_build_write_rejects_rw_param</td>
+    <td><code>build_write()</code> (FUNC 0x02) with RW-capable param POWER.</td>
+    <td>Raises <code>VentoCapabilityError</code> (subclass of <code>VentoProtocolError</code>, so existing invalid-input tests remain coherent).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_allows_w_only_param</td>
+    <td><code>build_write()</code> with W-only param FILTER_RESET.</td>
+    <td>Builds a packet whose FUNC byte is 0x02.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_rejects_read_only_param</td>
+    <td><code>build_write()</code> with read-only param FIRMWARE_VERSION.</td>
+    <td>Raises <code>VentoCapabilityError</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_allows_unknown_param_for_probing</td>
+    <td><code>build_write()</code> with raw unlisted param 0x90 &mdash; the library does not know the param's capabilities, so the controller's 0xFD negative ack is the source of truth.</td>
+    <td>Builds a packet whose FUNC byte is 0x02.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_resp_allows_rw_param</td>
+    <td><code>build_write_resp()</code> (FUNC 0x03) with RW param SPEED.</td>
+    <td>Builds a packet whose FUNC byte is 0x03.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_resp_allows_w_only_param</td>
+    <td><code>build_write_resp()</code> with W-only param RESET_ALARMS.</td>
+    <td>Builds a packet whose FUNC byte is 0x03.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_resp_rejects_read_only_param</td>
+    <td><code>build_write_resp()</code> with read-only param UNIT_TYPE.</td>
+    <td>Raises <code>VentoCapabilityError</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_write_resp_allows_unknown_param_for_probing</td>
+    <td><code>build_write_resp()</code> with raw unlisted param 0x90 &mdash; probing writes must reach the controller so its 0xFD ack can answer.</td>
+    <td>Builds a packet whose FUNC byte is 0x03.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestReadCapabilityValidation</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_build_read_rejects_w_only_param</td>
+    <td><code>build_read()</code> with W-only param FACTORY_RESET (a real device would answer <code>fd 85</code>).</td>
+    <td>Raises <code>VentoCapabilityError</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_build_read_allows_unknown_param_for_probing</td>
+    <td><code>build_read()</code> with raw param 0x90 &mdash; negative-ack capability probing must stay possible.</td>
+    <td>Builds a packet whose FUNC byte is 0x01.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestParamSizeRobustness</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_param_size_unknown_returns_none</td>
+    <td><code>param_size(0x0090)</code> for a param absent from PARAM_META.</td>
+    <td>Returns <code>None</code> (today raises <code>KeyError</code>).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_param_size_known_param</td>
+    <td><code>param_size(Param.POWER)</code>.</td>
+    <td>Returns <code>1</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h2 id="new-client">New: tests/test_ack_client.py</h2>
+<p>Client-layer verified-write contract, exercised through scripted fake transports
+(counting sends and popping canned acks). 21 cases, all green.</p>
+
+<h3>TestVerifiedWrite (sync)</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_verified_write_returns_applied_echo</td>
+    <td><code>write_params({SPEED: 2})</code> with a scripted echo ack (data <code>02 02</code>).</td>
+    <td>Returns <code>{Param.SPEED: b"\x02"}</code> &mdash; the applied values, not a <code>None</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_verified_write_uses_func_03</td>
+    <td>Inspects the single packet the client sends for an RW write.</td>
+    <td>Exactly one send; FUNC byte is 0x03 (WRITE_RESP).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_clamped_echo_returns_actual_value</td>
+    <td>Writes HUMIDITY_THRESHOLD=30 (below the 40&ndash;80 range); scripted echo reports 40 (<code>19 28</code>).</td>
+    <td>Returns <code>{Param.HUMIDITY_THRESHOLD: b"\x28"}</code>; no exception &mdash; the caller sees the clamped applied value (live-proven semantics).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_verified_write_retries_on_timeout</td>
+    <td>Two timeouts, then a good ack.</td>
+    <td>Write succeeds on the 3rd attempt; 3 sends; all three packets byte-identical.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_verified_write_raises_ack_error_after_all_attempts</td>
+    <td>Transport always times out.</td>
+    <td>Raises <code>VentoAckError</code>; exactly 3 sends (default attempt budget).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_ack_error_reports_attempts</td>
+    <td>Transport always times out.</td>
+    <td><code>VentoAckError.attempts == 3</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_invert_value_write_single_attempt</td>
+    <td><code>write_params({POWER: 2})</code> (2 = invert); transport always times out.</td>
+    <td>Exactly 1 send; <code>VentoAckError.attempts == 1</code> &mdash; a retry could double-toggle the fan (hazard identified during design).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_speed_two_is_not_treated_as_invert</td>
+    <td><code>write_params({SPEED: 2})</code> where 2 is a plain speed value; one timeout, then ack.</td>
+    <td>Succeeds with 2 sends &mdash; the no-retry rule is scoped to params with invert semantics, not to the value 2 generally.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestWriteOnlyRouting (sync)</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_w_only_write_fire_and_forget</td>
+    <td><code>write_params({FILTER_RESET: 1})</code> &mdash; W-only param.</td>
+    <td>Returns <code>{}</code>; one <code>send_only</code> (FUNC 0x02); no <code>send_recv</code>. Unverifiable by design.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_mixed_rw_and_w_only_rejected</td>
+    <td>One call mixing RW (SPEED) and W-only (FILTER_RESET) params.</td>
+    <td>Raises <code>VentoCapabilityError</code> <em>before</em> any traffic (a single packet cannot serve both rules).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_write_read_only_param_rejected</td>
+    <td><code>write_params({FIRMWARE_VERSION: ...})</code> &mdash; read-only param.</td>
+    <td>Raises <code>VentoCapabilityError</code>; nothing sent.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_empty_write_map_no_traffic</td>
+    <td><code>write_params({})</code>.</td>
+    <td>Returns <code>{}</code>; no packets sent at all.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestNegativeAcks (sync)</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_unsupported_param_ack_raises_with_applied</td>
+    <td>Scripted mixed ack <code>02 01 fd 90</code> for a write of SPEED + 0x90.</td>
+    <td>Raises <code>VentoUnsupportedParamError</code> whose <code>.applied == {Param.SPEED: b"\x01"}</code> &mdash; the caller learns what took effect.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_wrong_device_ack_raises_mismatch</td>
+    <td>Scripted ack with a foreign device ID in the header.</td>
+    <td>Raises <code>VentoAckMismatchError</code>; exactly 1 send (anomalous acks are not retried).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestScheduleDaySelectors (sync)</h3>
+<p class="meta">Pins the datasheet rule: day byte 0 (all days), 8 (Mon&ndash;Fri), 9 (Sat&ndash;Sun) are write-only selectors; reads accept only 1&ndash;7. This asymmetry is intended behaviour, not a bug.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_schedule_write_accepts_day_zero</td>
+    <td><code>set_schedule_period(0, 1, 1, 8, 0)</code>.</td>
+    <td>Accepted without <code>VentoValueError</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_schedule_write_accepts_day_nine</td>
+    <td><code>set_schedule_period(9, 1, 1, 8, 0)</code>.</td>
+    <td>Accepted without <code>VentoValueError</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_schedule_read_rejects_day_zero</td>
+    <td><code>get_schedule_period(0, 1)</code>.</td>
+    <td>Raises <code>VentoValueError</code> (read selector range is 1&ndash;7).</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestAsyncVerifiedWrite</h3>
+<p class="meta">Async mirror of the core sync cases using a fake async transport. async client must not lag the sync client.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_async_verified_write_returns_applied_echo</td>
+    <td><code>AsyncVentoClient.write_params({SPEED: 2})</code> with a scripted echo ack.</td>
+    <td>Returns <code>{Param.SPEED: b"\x02"}</code>; packet FUNC byte is 0x03.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_async_verified_write_retries_on_timeout</td>
+    <td>Two timeouts, then a good ack.</td>
+    <td>Succeeds on 3rd attempt; 3 sends total.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_async_w_only_write_fire_and_forget</td>
+    <td><code>write_params({FACTORY_RESET: 1})</code> &mdash; W-only param.</td>
+    <td>Returns <code>{}</code>; one <code>send_only</code>; no <code>send_recv</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_async_invert_single_attempt</td>
+    <td><code>write_params({POWER: 2})</code> with a timing-out transport.</td>
+    <td>Exactly 1 send; <code>VentoAckError.attempts == 1</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h2 id="new-transport">New: tests/test_ack_transport.py</h2>
+<p>Transport-layer source-address filtering so a stray datagram from another host on the LAN
+cannot be mistaken for the device's ack. 6 cases.</p>
+
+<h3>TestSyncSourceFiltering</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_sync_send_recv_ignores_foreign_source</td>
+    <td>Mocked socket first receives a datagram from 10.9.9.9, then the real reply from the target host 192.0.2.10.</td>
+    <td><code>send_recv()</code> returns the target host's datagram; the stray one is discarded.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_sync_send_recv_timeout_when_only_foreign_source</td>
+    <td>Mocked socket receives only foreign datagrams, then times out.</td>
+    <td>Raises <code>VentoTimeoutError</code>; foreign data is never returned.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h3>TestAsyncSourceFiltering</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th><th>Status</th></tr>
+  <tr>
+    <td class="case-id">test_protocol_ignores_foreign_source</td>
+    <td><code>_SingleResponseProtocol(future, expected_host=HOST)</code> receives a datagram from a foreign address.</td>
+    <td>The future stays unresolved.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_protocol_resolves_matching_source</td>
+    <td>Same protocol receives a datagram from the expected host.</td>
+    <td>The future resolves with <code>(data, addr)</code>.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_protocol_without_expected_host_accepts_any_source</td>
+    <td>Protocol constructed without <code>expected_host</code> (legacy signature) receives any datagram.</td>
+    <td>The future resolves &mdash; backward compatibility with the current behaviour.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+  <tr>
+    <td class="case-id">test_async_send_recv_end_to_end_matching_source</td>
+    <td>Real sockets: a local responder on 127.0.0.1 answers the transport's ping.</td>
+    <td><code>AsyncVentoTransport.send_recv()</code> returns the responder's <code>b"pong"</code> &mdash; the happy path keeps working with the filter active.</td>
+    <td class="pass">Passes now</td>
+  </tr>
+</table>
+
+<h2 id="existing-protocol">Existing: tests/test_protocol.py</h2>
+<p>Original protocol suite (spec packets, builders, parsers, decoders, input validation). All 28 cases pass today and must stay green.</p>
+
+<h3>TestChecksum</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_spec_rq</td><td>Checksum verification of the datasheet's example request packet (FUNC 0x01, params 1 and 2).</td><td>No exception (checksum 0x00DE matches).</td></tr>
+  <tr><td class="case-id">test_spec_rs</td><td>Checksum verification of the datasheet's example response packet (FUNC 0x06).</td><td>No exception (checksum 0x00E6 matches).</td></tr>
+  <tr><td class="case-id">test_bad_checksum</td><td>Same request packet with the last checksum byte corrupted.</td><td>Raises <code>VentoChecksumError</code>.</td></tr>
+</table>
+
+<h3>TestBuilding</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_matches_spec</td><td><code>build_read()</code> for POWER and SPEED must byte-match the datasheet's example request.</td><td>Exact match with SPEC_RQ.</td></tr>
+  <tr><td class="case-id">test_starts_fd_fd</td><td>Every packet starts with the 0xFD 0xFD framing bytes.</td><td>First two bytes are <code>\xfd\xfd</code>.</td></tr>
+  <tr><td class="case-id">test_checksum_valid</td><td>A freshly built read packet passes checksum verification.</td><td>No exception from <code>verify_checksum()</code>.</td></tr>
+  <tr><td class="case-id">test_discovery_default_id</td><td>Discovery packet uses the DEFAULT_DEVICEID magic ID.</td><td>Bytes 4&ndash;20 of the packet equal <code>DEFAULT_DEVICEID</code>.</td></tr>
+  <tr><td class="case-id">test_night_timer_page_cmd</td><td>Param 770 (0x0302) requires the 0xFF page command in the data block.</td><td>Data contains <code>0xFF 0x03</code> followed by low byte 0x02.</td></tr>
+  <tr><td class="case-id">test_bad_id_raises</td><td>Device ID shorter than 16 characters.</td><td>Raises (VentoProtocolError).</td></tr>
+  <tr><td class="case-id">test_long_password_raises</td><td>Password longer than 8 characters.</td><td>Raises (VentoProtocolError).</td></tr>
+</table>
+
+<h3>TestParsing</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_spec_response</td><td>Parses the datasheet's example response (params 1 and 2).</td><td><code>{POWER: b"\x00", SPEED: b"\x03"}</code>.</td></tr>
+  <tr><td class="case-id">test_unsupported_param</td><td>Data block <code>fd 01 02 03</code>: 0xFD negative ack for param 1, then a value pair.</td><td>Raises <code>VentoUnsupportedParamError</code> containing 0x0001.</td></tr>
+  <tr><td class="case-id">test_size_override</td><td>0xFE size command for a 2-byte battery voltage param.</td><td>Decodes 5000 mV.</td></tr>
+  <tr><td class="case-id">test_page_change</td><td>0xFF page switch to page 0x03, then a 2-byte NIGHT_TIMER value.</td><td>Value decodes to minutes=30, hours=8.</td></tr>
+</table>
+
+<h3>TestDecoders</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_decode_ip</td><td>4-byte IP decode.</td><td>"192.168.1.50".</td></tr>
+  <tr><td class="case-id">test_encode_ip</td><td>IP string encode.</td><td><code>bytes([192,168,1,50])</code>.</td></tr>
+  <tr><td class="case-id">test_firmware</td><td>6-byte firmware block decode.</td><td>major=1, minor=5, day=14, month=3, year=2024.</td></tr>
+  <tr><td class="case-id">test_machine_hours</td><td>4-byte machine hours decode.</td><td>minutes=30, hours=5, days=10.</td></tr>
+  <tr><td class="case-id">test_rtc_time</td><td>3-byte RTC time decode.</td><td>seconds=45, minutes=30, hours=14.</td></tr>
+  <tr><td class="case-id">test_rtc_calendar</td><td>4-byte RTC calendar decode.</td><td>year=2024, month=6.</td></tr>
+  <tr><td class="case-id">test_schedule</td><td>6-byte schedule period decode.</td><td>speed=2, end_hours=8, end_minutes=30.</td></tr>
+  <tr><td class="case-id">test_filter_countdown</td><td>3-byte filter countdown decode.</td><td>minutes=0, hours=12, days=90.</td></tr>
+  <tr><td class="case-id">test_bad_ip_size</td><td>IP decode with a 2-byte value.</td><td>Raises (VentoProtocolError).</td></tr>
+</table>
+
+<h3>TestValidation (client input ranges)</h3>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_bad_speed</td><td><code>set_speed(5)</code> &mdash; only 1&ndash;3 valid.</td><td>Raises <code>VentoValueError</code>.</td></tr>
+  <tr><td class="case-id">test_bad_humidity_threshold</td><td><code>set_humidity_threshold(100)</code> &mdash; range 40&ndash;80.</td><td>Raises <code>VentoValueError</code>.</td></tr>
+  <tr><td class="case-id">test_bad_boost_delay</td><td><code>set_boost_delay(61)</code> &mdash; range 0&ndash;60.</td><td>Raises <code>VentoValueError</code>.</td></tr>
+  <tr><td class="case-id">test_long_password</td><td><code>change_password("TOOLONGPWD")</code> &mdash; max 8 chars.</td><td>Raises <code>VentoValueError</code>.</td></tr>
+  <tr><td class="case-id">test_manual_speed_boundaries</td><td><code>set_manual_speed(0)</code> and <code>set_manual_speed(255)</code> are the valid boundaries; the transport is mocked to return a verified-write echo ack (SPEED and MANUAL_SPEED).</td><td>Both accepted (no raise), applied echo parsed.</td></tr>
+</table>
+
+<h2 id="existing-invalid">Existing: tests/test_protocol_invalid.py</h2>
+<p>Malformed-packet rejections. All cases pass today and must stay green.</p>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_invalid_packet_rejections[truncated]</td><td>4-byte fragment (too short for any parsing).</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_invalid_packet_rejections[no-header]</td><td>Packet without the 0xFD 0xFD start bytes.</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_invalid_packet_rejections[bad-checksum]</td><td>Full-length packet whose checksum does not match.</td><td>Raises <code>VentoChecksumError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_response_rejects_truncated_packet</td><td>Packet cut off before the data section and checksum bytes begin (no checksum to verify).</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_response_rejects_invalid_header_lengths[bad-id-size]</td><td>ID size byte 0x00 instead of 0x10.</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_response_rejects_invalid_header_lengths[bad-pwd-size]</td><td>Password size byte 0x09 (max is 0x08).</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_data_bytes_rejects_truncated_control_commands[0xff]</td><td>Page command with no page byte.</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_data_bytes_rejects_truncated_control_commands[0xfe]</td><td>Size command with no size byte.</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_data_bytes_rejects_truncated_control_commands[0xfe-00]</td><td>Size command with size 0 (must be &gt; 0).</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_parse_data_bytes_rejects_truncated_control_commands[0xfd]</td><td>Unsupported-param command with no param byte.</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_build_write_rejects_wrong_fixed_size</td><td>Writing a 1-byte value to a 2-byte param (NIGHT_TIMER).</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_build_write_rejects_integer_overflow</td><td>Writing 256 to a 1-byte param (POWER).</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+  <tr><td class="case-id">test_build_packet_rejects_non_ascii_password</td><td>Password containing non-ASCII characters.</td><td>Raises <code>VentoProtocolError</code>.</td></tr>
+</table>
+
+<h2 id="existing-transport">Existing: tests/test_transport.py</h2>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_sync_send_recv_raises_timeout_error</td><td>Mocked socket that never receives; sync transport times out.</td><td>Raises <code>VentoTimeoutError</code> (wraps <code>TimeoutError</code>).</td></tr>
+  <tr><td class="case-id">test_async_send_recv_raises_timeout_error</td><td>Real local socket with nothing answering; async transport times out.</td><td>Raises <code>VentoTimeoutError</code>.</td></tr>
+  <tr><td class="case-id">test_async_send_only_wraps_socket_creation_error</td><td>Socket creation fails (<code>create_datagram_endpoint</code> raises OSError).</td><td>Raises <code>VentoConnectionError</code> ("Cannot open socket").</td></tr>
+</table>
+
+<h2 id="existing-discovery">Existing: tests/test_client_discovery.py</h2>
+<table>
+  <tr><th>Test case</th><th>Description</th><th>Expected result</th></tr>
+  <tr><td class="case-id">test_parse_discovery_items_deduplicates_device_advertisements</td><td>Two discovery responses advertising the same device.</td><td>One <code>DiscoveredDevice</code> is returned (duplicates removed).</td></tr>
+  <tr><td class="case-id">test_discover_returns_unique_devices</td><td><code>VentoClient.discover()</code> with a mocked transport yielding duplicate responses.</td><td>Unique devices only.</td></tr>
+</table>
+
+<footer>
+  Generated 2026-10-04 as part of the robust-ack functionality work. The test-first
+  cases defined the implementation contract; all 92 cases are green since the
+  implementation landed (verified against six real Vento Expert fans). Update this
+  document alongside any later test changes.
+</footer>
+
+</main>
+</body>
+</html>

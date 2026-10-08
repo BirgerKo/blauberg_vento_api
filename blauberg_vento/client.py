@@ -23,7 +23,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from .exceptions import VentoUnsupportedParamError, VentoValueError
+from .exceptions import (
+    VentoAckError,
+    VentoCapabilityError,
+    VentoTimeoutError,
+    VentoUnsupportedParamError,
+    VentoValueError,
+)
 from .models import (
     DeviceState,
     DiscoveredDevice,
@@ -36,7 +42,7 @@ from .models import (
     TimerCountdown,
     WifiConfig,
 )
-from .parameters import DEFAULT_PORT, Param
+from .parameters import DEFAULT_PORT, Param, is_invertible, is_write_only
 from .protocol import (
     build_decrement,
     build_discovery,
@@ -62,9 +68,20 @@ from .transport import AsyncVentoTransport, VentoTransport
 
 log = logging.getLogger(__name__)
 
+# Attempt budget for verified writes. Measured UDP loss on a live network was
+# roughly 3%, so a single lost ack must not surface as a hard failure.
+WRITE_ATTEMPTS = 3
+
 DiscoveryItem = dict[str, str | bytes]
 RawParamMap = dict[Param | int, bytes]
 ParamWriteMap = dict[Param, int | bytes]
+
+
+def _is_invert_write(param_values: ParamWriteMap) -> bool:
+    """True when the write contains an invert command (value 2 on a parameter
+    whose datasheet defines "2 - Invert"). Invert writes are never retried: an
+    applied-but-unacknowledged toggle would be flipped back by a retry."""
+    return any(is_invertible(p) and val == 2 for p, val in param_values.items())
 
 
 def _check_range(name: str, value: int, low: int, high: int) -> None:
@@ -295,11 +312,45 @@ class VentoClient:
     def _send_only(self, packet: bytes) -> None:
         self._transport.send_only(self.host, packet, self.port)
 
+    def _verified_write(self, packet: bytes, attempts: int) -> RawParamMap:
+        """Send a FUNC 0x03 write and return the controller's applied values.
+
+        Timeouts are retried up to ``attempts``; protocol-level failures
+        (negative acks, device ID mismatch, checksum errors) propagate
+        immediately because the controller demonstrably answered.
+        """
+        last_exc: Exception | None = None
+        for _ in range(attempts):
+            try:
+                raw = self._transport.send_recv(self.host, packet, self.port)
+                return parse_response(raw, expected_device_id=self.device_id)
+            except VentoTimeoutError as exc:
+                last_exc = exc
+        raise VentoAckError(attempts) from last_exc
+
     def read_params(self, params: list[Param]) -> RawParamMap:
         return self._send_recv(build_read(self.device_id, self.password, list(params)))
 
-    def write_params(self, param_values: ParamWriteMap) -> None:
-        self._send_only(build_write(self.device_id, self.password, param_values))
+    def write_params(self, param_values: ParamWriteMap) -> RawParamMap:
+        """Write parameters and return the controller's applied values.
+
+        Routing follows the parameter capabilities: W-only parameters go
+        fire-and-forget (FUNC 0x02, unverifiable by design, empty result);
+        everything else is a verified write (FUNC 0x03 + echo ack). Mixing the
+        two in one call is rejected because a single packet cannot serve both
+        paths.
+        """
+        if not param_values:
+            return {}
+        w_only = {p for p in param_values if is_write_only(p)}
+        if w_only and len(w_only) != len(param_values):
+            raise VentoCapabilityError([int(p) for p in param_values])
+        if w_only:
+            self._send_only(build_write(self.device_id, self.password, param_values))
+            return {}
+        packet = build_write_resp(self.device_id, self.password, param_values)
+        attempts = 1 if _is_invert_write(param_values) else WRITE_ATTEMPTS
+        return self._verified_write(packet, attempts)
 
     def write_params_with_response(self, param_values: ParamWriteMap) -> RawParamMap:
         return self._send_recv(build_write_resp(self.device_id, self.password, param_values))
@@ -594,11 +645,33 @@ class AsyncVentoClient:
     async def _send_only(self, packet: bytes) -> None:
         await self._transport.send_only(self.host, packet, self.port)
 
+    async def _verified_write(self, packet: bytes, attempts: int) -> RawParamMap:
+        """Async twin of the sync verified write: retry timeouts only."""
+        last_exc: Exception | None = None
+        for _ in range(attempts):
+            try:
+                raw = await self._transport.send_recv(self.host, packet, self.port)
+                return parse_response(raw, expected_device_id=self.device_id)
+            except VentoTimeoutError as exc:
+                last_exc = exc
+        raise VentoAckError(attempts) from last_exc
+
     async def read_params(self, params: list[Param]) -> RawParamMap:
         return await self._send_recv(build_read(self.device_id, self.password, list(params)))
 
-    async def write_params(self, param_values: ParamWriteMap) -> None:
-        await self._send_only(build_write(self.device_id, self.password, param_values))
+    async def write_params(self, param_values: ParamWriteMap) -> RawParamMap:
+        """Async twin of the sync verified write. See VentoClient.write_params."""
+        if not param_values:
+            return {}
+        w_only = {p for p in param_values if is_write_only(p)}
+        if w_only and len(w_only) != len(param_values):
+            raise VentoCapabilityError([int(p) for p in param_values])
+        if w_only:
+            await self._send_only(build_write(self.device_id, self.password, param_values))
+            return {}
+        packet = build_write_resp(self.device_id, self.password, param_values)
+        attempts = 1 if _is_invert_write(param_values) else WRITE_ATTEMPTS
+        return await self._verified_write(packet, attempts)
 
     async def write_params_with_response(self, param_values: ParamWriteMap) -> RawParamMap:
         return await self._send_recv(build_write_resp(self.device_id, self.password, param_values))
